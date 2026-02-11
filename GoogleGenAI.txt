@@ -1,0 +1,166 @@
+import { GoogleGenAI, Type, Modality } from "@google/genai";
+import { CompositionDNA, GenerationRequest } from "../types";
+
+export class GeminiService {
+  private ai: GoogleGenAI;
+
+  constructor() {
+    this.ai = new GoogleGenAI({ apiKey:"AIzaSyBGB32YW4meBAeerkZ9sOrmxXkV2ZsrxOU" });
+  }
+
+  async generateComposition(request: GenerationRequest): Promise<Partial<CompositionDNA>> {
+    const prompt = `Generate a detailed musical composition "DNA" for a ${request.genre} track.
+    Mood: ${request.mood}
+    Tempo: ${request.tempo} BPM
+    
+    The response must be in JSON format and include:
+    - title: A creative name for the track
+    - key: Musical key (e.g. "C Minor")
+    - progression: An array of 4-8 chord symbols (e.g. ["Am", "F", "C", "G"])
+    - instruments: List of 3-5 key instruments
+    - lyrics: 4-8 lines of evocative lyrics (if instrumental, create poetic descriptions instead)
+    - description: A short blurb about why this fits the mood and genre
+    - visualPrompt: A detailed image generation prompt for the cover art based on the title and mood.`;
+
+    try {
+      const response = await this.ai.models.generateContent({
+        model: 'gemini-3-flash-preview',
+        contents: prompt,
+        config: {
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              title: { type: Type.STRING },
+              key: { type: Type.STRING },
+              progression: { type: Type.ARRAY, items: { type: Type.STRING } },
+              instruments: { type: Type.ARRAY, items: { type: Type.STRING } },
+              lyrics: { type: Type.STRING },
+              description: { type: Type.STRING },
+              visualPrompt: { type: Type.STRING }
+            },
+            required: ["title", "key", "progression", "instruments", "lyrics", "description", "visualPrompt"]
+          }
+        }
+      });
+
+      const data = JSON.parse(response.text.trim());
+      return {
+        ...data,
+        genre: request.genre,
+        mood: request.mood,
+        tempo: request.tempo,
+        id: Math.random().toString(36).substring(7),
+        createdAt: Date.now()
+      };
+    } catch (error) {
+      console.error("Failed to generate composition DNA:", error);
+      throw error;
+    }
+  }
+
+  async generateCoverArt(visualPrompt: string): Promise<string> {
+    try {
+      const response = await this.ai.models.generateContent({
+        model: 'gemini-2.5-flash-image',
+        contents: {
+          parts: [{ text: `High-quality album cover art, professional design, no text on image: ${visualPrompt}` }]
+        },
+        config: {
+          imageConfig: {
+            aspectRatio: "1:1"
+          }
+        }
+      });
+
+      for (const part of response.candidates?.[0]?.content?.parts || []) {
+        if (part.inlineData) {
+          return `data:image/png;base64,${part.inlineData.data}`;
+        }
+      }
+      return 'https://picsum.photos/400/400';
+    } catch (error) {
+      console.error("Failed to generate cover art:", error);
+      return 'https://picsum.photos/400/400';
+    }
+  }
+
+  async generateAudio(dna: Partial<CompositionDNA>): Promise<string | undefined> {
+    try {
+      // Using the native audio model which is much more capable of "acting" and natural vocalization
+      // We instruct it to perform as a human singer with natural breathing, pitch slides, and emotional weight.
+      const prompt = `Perform these lyrics as a highly emotional, human vocal recording for a ${dna.mood} ${dna.genre} song. 
+      Sing with a natural, expressive human voice. Include realistic details like:
+      - Subtle breaths between phrases
+      - Natural pitch slides and vibrato
+      - Emotional phrasing that matches the ${dna.mood} mood
+      - If it's Energetic, sing with power and grit. 
+      - If it's Chill, sing with a soft, intimate breathy tone.
+      - If it's Sad, include a slight tremor or crack in the voice.
+      
+      Lyrics to perform:
+      "${dna.lyrics}"`;
+
+      const voiceMap: Record<string, string> = {
+        'Energetic': 'Fenrir',
+        'Chill': 'Zephyr',
+        'Sad': 'Puck',
+        'Mysterious': 'Charon',
+        'Epic': 'Kore',
+        'Nostalgic': 'Zephyr'
+      };
+
+      const response = await this.ai.models.generateContent({
+        model: "gemini-2.5-flash-native-audio-preview-12-2025",
+        contents: [{ parts: [{ text: prompt }] }],
+        config: {
+          responseModalities: [Modality.AUDIO],
+          speechConfig: {
+            voiceConfig: {
+              prebuiltVoiceConfig: { 
+                voiceName: voiceMap[dna.mood as string] || 'Zephyr' 
+              },
+            },
+          },
+        },
+      });
+
+      return response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+    } catch (error) {
+      console.error("Failed to generate audio:", error);
+      return undefined;
+    }
+  }
+}
+
+export const geminiService = new GeminiService();
+
+// Audio helper functions
+export function decodeBase64(base64: string) {
+  const binaryString = atob(base64);
+  const len = binaryString.length;
+  const bytes = new Uint8Array(len);
+  for (let i = 0; i < len; i++) {
+    bytes[i] = binaryString.charCodeAt(i);
+  }
+  return bytes;
+}
+
+export async function decodeAudioData(
+  data: Uint8Array,
+  ctx: AudioContext,
+  sampleRate: number = 24000,
+  numChannels: number = 1,
+): Promise<AudioBuffer> {
+  const dataInt16 = new Int16Array(data.buffer);
+  const frameCount = dataInt16.length / numChannels;
+  const buffer = ctx.createBuffer(numChannels, frameCount, sampleRate);
+
+  for (let channel = 0; channel < numChannels; channel++) {
+    const channelData = buffer.getChannelData(channel);
+    for (let i = 0; i < frameCount; i++) {
+      channelData[i] = dataInt16[i * numChannels + channel] / 32768.0;
+    }
+  }
+  return buffer;
+}
